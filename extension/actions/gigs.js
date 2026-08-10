@@ -91,11 +91,16 @@ self.FMcp.pause_gig = async function({ gigId }) {
   const row = rows.find(r => r.getAttribute('data-id') === String(gigId));
   if (!row) throw new Error(`Gig ${gigId} not found`);
 
-  const form = row.querySelector('form[action*="/suspend"]');
-  if (!form) throw new Error(`Pause form not found for gig ${gigId} — gig may already be paused`);
+  // New UI: select the row, then use the bulk "Pause" action
+  const cb = row.querySelector('.js-cbx-gig-row, input[type="checkbox"]');
+  if (!cb) throw new Error(`Checkbox not found for gig ${gigId}`);
+  if (!cb.checked) cb.click();
+  await new Promise(r => setTimeout(r, 300));
 
-  form.querySelector('input[type="submit"]').click();
-  await new Promise(r => setTimeout(r, 1500));
+  const btn = document.querySelector('.js-btn-my-gigs-action[data-action="suspend"]');
+  if (!btn) throw new Error(`Pause button not found for gig ${gigId} — gig may already be paused`);
+  btn.click();
+  await new Promise(r => setTimeout(r, 2000));
   return `Gig ${gigId} paused`;
 };
 
@@ -105,11 +110,16 @@ self.FMcp.activate_gig = async function({ gigId }) {
   const row = rows.find(r => r.getAttribute('data-id') === String(gigId));
   if (!row) throw new Error(`Gig ${gigId} not found in the paused gigs list`);
 
-  const form = row.querySelector('form[action*="/activate"]');
-  if (!form) throw new Error(`Activate form not found for gig ${gigId}`);
+  // New UI: select the row, then use the bulk "Activate" action
+  const cb = row.querySelector('.js-cbx-gig-row, input[type="checkbox"]');
+  if (!cb) throw new Error(`Checkbox not found for gig ${gigId}`);
+  if (!cb.checked) cb.click();
+  await new Promise(r => setTimeout(r, 300));
 
-  form.querySelector('input[type="submit"]').click();
-  await new Promise(r => setTimeout(r, 1500));
+  const btn = document.querySelector('.js-btn-my-gigs-action[data-action="activate"]');
+  if (!btn) throw new Error(`Activate button not found for gig ${gigId} — gig may already be active`);
+  btn.click();
+  await new Promise(r => setTimeout(r, 2000));
   return `Gig ${gigId} activated`;
 };
 
@@ -119,11 +129,23 @@ self.FMcp.delete_gig = async function({ gigId }) {
   const row = rows.find(r => r.getAttribute('data-id') === String(gigId));
   if (!row) throw new Error(`Gig ${gigId} not found`);
 
-  const form = row.querySelector('form.js-delete-gig-form, form[action*="/delete"]');
-  if (!form) throw new Error(`Delete form not found for gig ${gigId}`);
+  // New UI: select the row, then use the bulk "Delete" action
+  const cb = row.querySelector('.js-cbx-gig-row, input[type="checkbox"]');
+  if (!cb) throw new Error(`Checkbox not found for gig ${gigId}`);
+  if (!cb.checked) cb.click();
+  await new Promise(r => setTimeout(r, 300));
 
-  form.querySelector('input[type="submit"]').click();
+  const btn = document.querySelector('.js-btn-my-gigs-action[data-action="delete"]');
+  if (!btn) throw new Error(`Delete button not found for gig ${gigId}`);
+  btn.click();
   await new Promise(r => setTimeout(r, 1500));
+
+  // Confirm modal (if present)
+  const confirmBtn = document.querySelector('.modal .btn-danger, .modal [data-testid="confirm-delete"], .modal form input[type="submit"]');
+  if (confirmBtn) {
+    confirmBtn.click();
+    await new Promise(r => setTimeout(r, 1500));
+  }
   return `Gig ${gigId} deleted`;
 };
 

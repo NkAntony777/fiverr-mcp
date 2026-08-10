@@ -132,6 +132,15 @@ async function executeJsInTab(tabId, code) {
 }
 
 async function handleCommand(cmd) {
+  // Content-script handlers send back { error: string } on failure —
+  // normalize so the bridge surfaces it as an error, not a successful result.
+  const normalize = (result) => {
+    if (result && typeof result === 'object' && typeof result.error === 'string') {
+      return { id: cmd.id, error: result.error };
+    }
+    return { id: cmd.id, result };
+  };
+
   // ── execute_js ──────────────────────────────────────────────────────────────
   if (cmd.tool === 'execute_js') {
     const url  = cmd.params?.url;   // undefined = use current tab
@@ -187,7 +196,7 @@ async function handleCommand(cmd) {
       const editTabId = await ensureFiverrTab(editUrl);
       await new Promise(r => setTimeout(r, 1500));
       const result = await chrome.tabs.sendMessage(editTabId, { tool: cmd.tool, params: cmd.params });
-      return { id: cmd.id, result };
+      return normalize(result);
     } catch (e) {
       return { id: cmd.id, error: String(e.message ?? e) };
     }
@@ -221,7 +230,7 @@ async function handleCommand(cmd) {
     const tabId = await ensureFiverrTab(url, forceReload);
     await new Promise(r => setTimeout(r, 800));
     const result = await chrome.tabs.sendMessage(tabId, { tool: cmd.tool, params: cmd.params });
-    return { id: cmd.id, result };
+    return normalize(result);
   } catch (e) {
     return { id: cmd.id, error: String(e.message ?? e) };
   }
