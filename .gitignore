@@ -5,3 +5,6 @@ cookies.json
 .edge-profile/
 scripts/selector-report.json
 *.local
+
+extension.crx
+extension.pem

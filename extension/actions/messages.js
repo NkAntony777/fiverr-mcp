@@ -42,27 +42,23 @@ self.FMcp.list_messages = async function({ unreadOnly } = {}) {
 };
 
 self.FMcp.get_conversation = async function({ conversationId }) {
-  // conversationId is the other user's username (from list_messages)
-  const contacts = await waitForContacts();
-  const contact = contacts.find(c => {
-    const username = c.querySelector('[data-track-value]')?.getAttribute('data-track-value') ?? '';
-    return username === String(conversationId) ||
-           c.querySelector('.user-info p')?.textContent.trim() === String(conversationId);
-  });
-  if (!contact) throw new Error(`Conversation with ${conversationId} not found`);
+  // The new inbox is an SPA — navigating to /inbox/{username} opens the thread directly.
+  // The page keeps the conversation list; the thread URL is /inbox/{username}.
+  await self.FMcp.waitFor('[data-testid="contact"], .inbox_perseus, #main-wrapper');
 
-  // Click to open the thread
-  contact.click();
-  await new Promise(r => setTimeout(r, 1500));
+  const threadUrl = window.location.href;
 
-  // Read messages from the thread pane
-  // The thread panel is the right-side area; messages use [data-testid="message"] or similar
+  // Message selectors for the current inbox renderer (kept broad — structure varies)
   const threadSelectors = [
     '[data-testid="message"]',
     '[class*="message-bubble"]',
     '[class*="MessageBubble"]',
+    '[class*="msg-row"]',
+    '[class*="message-row"]',
+    '[class*="chat"]',
     '.message',
   ];
+
   let messages = [];
   for (const sel of threadSelectors) {
     const els = document.querySelectorAll(sel);
@@ -75,12 +71,17 @@ self.FMcp.get_conversation = async function({ conversationId }) {
     }
   }
 
-  // Also grab the thread URL (conversation URL that may have loaded in the SPA)
-  const threadUrl = window.location.href;
+  if (messages.length) {
+    return { conversationId, threadUrl, messages };
+  }
 
-  return {
-    conversationId,
-    threadUrl,
-    messages: messages.length ? messages : [{ note: 'Messages could not be parsed — thread structure may have changed' }],
-  };
+  // No message elements — distinguish empty / dead-thread states
+  const bodyText = document.body.innerText;
+  if (bodyText.includes('is no longer available')) {
+    return { conversationId, threadUrl, messages: [], note: 'Conversation is empty — the other party is no longer available on Fiverr' };
+  }
+  if (bodyText.includes('Something went wrong')) {
+    return { conversationId, threadUrl, messages: [], note: 'Thread failed to load — try again' };
+  }
+  return { conversationId, threadUrl, messages: [], note: 'No messages found in this conversation' };
 };

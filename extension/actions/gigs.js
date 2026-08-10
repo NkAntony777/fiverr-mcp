@@ -35,16 +35,54 @@ self.FMcp.list_gigs = async function() {
 
 // ── get_gig (runs on the EDIT page, not manage_gigs) ─────────────────────────
 self.FMcp.get_gig = async function({ gigId }) {
-  // Wait for the edit form to be present
-  await self.FMcp.waitFor('input[name="title"]');
-  const titleEl = document.querySelector('input[name="title"]');
-  const descEl  = document.querySelector('.fr-element') ??
-                  document.querySelector('[data-testid="description-editor"]');
-  return {
-    id:          String(gigId),
-    title:       titleEl?.value ?? '',
-    description: descEl?.textContent ?? '',
+  // The gig editor now embeds the full gig model in a JSON script tag.
+  // Wait for the title field first (the editor itself).
+  await self.FMcp.waitFor('textarea.gig-title-textarea, input[name="title"]');
+
+  const result = {
+    id:       String(gigId),
+    title:    '',
+    status:   'unknown',
+    tags:     [],
+    description: '',
+    faq:      [],
+    edit_url: window.location.href.split('?')[0],
   };
+
+  // Fallback: title straight from the editor field
+  const titleEl = document.querySelector('textarea.gig-title-textarea, input[name="title"]');
+  if (titleEl) result.title = titleEl.value.trim();
+
+  // Primary source: embedded view-model JSON (contains overview, description & FAQ)
+  const script = Array.from(document.querySelectorAll('script'))
+    .find(s => s.textContent && s.textContent.includes('"viewData"') &&
+               s.textContent.includes('"faq_description"'));
+  if (script) {
+    try {
+      const json = JSON.parse(script.textContent.slice(script.textContent.indexOf('{')));
+      const vd = json.viewData || {};
+      const root     = vd.root || {};
+      const overview = vd.overview || {};
+      const faqDesc  = vd.faq_description || {};
+
+      if (root.gigId)      result.id     = String(root.gigId);
+      if (root.gigStatus)  result.status = root.gigStatus;
+      if (root.gigSlug)    result.slug   = root.gigSlug;
+      if (overview.title)  result.title  = overview.title;
+      if (Array.isArray(overview.gigSearchTags)) result.tags = overview.gigSearchTags;
+
+      if (faqDesc.description) {
+        const div = document.createElement('div');
+        div.innerHTML = faqDesc.description;
+        result.description = div.textContent.trim();
+      }
+      if (Array.isArray(faqDesc.faqs)) {
+        result.faq = faqDesc.faqs.map(f => ({ question: f.question, answer: f.answer }));
+      }
+    } catch (_) { /* keep fallback values */ }
+  }
+
+  return result;
 };
 
 // ── pause_gig ────────────────────────────────────────────────────────────────
@@ -91,10 +129,10 @@ self.FMcp.delete_gig = async function({ gigId }) {
 
 // ── update_gig (runs on the EDIT page) ───────────────────────────────────────
 self.FMcp.update_gig = async function({ gigId, title, description, tags, packages, faq, requirements }) {
-  await self.FMcp.waitFor('input[name="title"]');
+  await self.FMcp.waitFor('textarea.gig-title-textarea, input[name="title"]');
 
   if (title !== undefined) {
-    const el = document.querySelector('input[name="title"]');
+    const el = document.querySelector('textarea.gig-title-textarea, input[name="title"]');
     if (el) {
       el.value = '';
       el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -138,7 +176,7 @@ self.FMcp.update_gig = async function({ gigId, title, description, tags, package
 // ── create_gig ───────────────────────────────────────────────────────────────
 self.FMcp.create_gig = async function(params) {
   // Step 1: Overview
-  const titleEl = await self.FMcp.waitFor('input[name="title"]');
+  const titleEl = await self.FMcp.waitFor('textarea.gig-title-textarea, input[name="title"]');
   titleEl.value = '';
   titleEl.dispatchEvent(new Event('input', { bubbles: true }));
   titleEl.value = params.title;

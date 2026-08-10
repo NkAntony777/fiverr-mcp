@@ -1,55 +1,69 @@
 if (!self.FMcp) self.FMcp = {};
 
-// Fiverr exposes analytics via a tRPC-style batch API on the seller dashboard.
-// Endpoint: GET /seller-dashboard-page/api/analyticsData?batch=1&input={}
-// from/to date filtering is not supported by Fiverr's API; we filter client-side.
+// Fiverr analytics endpoints (current versions):
+// - Dashboard summary: GET /seller-dashboard-page/api/analyticsData?batch=1&input={}
+// - Orders & revenue trend: GET /users/{username}/seller_analytics_graph_data?type={timeframe}
+//   (timeframes: "30-days-back" | "3-months-back" | "yearly")
 
 self.FMcp.get_analytics = async function({ gigId, from, to } = {}) {
-  const input = encodeURIComponent('{}');
-  const resp = await fetch(`/seller-dashboard-page/api/analyticsData?batch=1&input=${input}`, {
-    credentials: 'include',
-    headers: { 'Accept': 'application/json' },
-  });
-  if (!resp.ok) throw new Error(`Analytics API returned HTTP ${resp.status}`);
+  const out = { summary: {}, graphs: {}, gigs: [] };
 
-  const body = await resp.json();
+  // 1) Dashboard summary (earned this month, active orders total)
+  try {
+    const input = encodeURIComponent('{}');
+    const resp = await fetch(`/seller-dashboard-page/api/analyticsData?batch=1&input=${input}`, {
+      credentials: 'include',
+      headers: { 'Accept': 'application/json' },
+    });
+    if (resp.ok) {
+      const body = await resp.json();
+      const payload = Array.isArray(body) ? body[0] : body;
+      const data = payload?.result?.data ?? payload?.data ?? payload;
+      if (data?.earnedThisMonth)     out.summary.earned_this_month  = data.earnedThisMonth;
+      if (data?.activeOrdersTotal)   out.summary.active_orders_total = data.activeOrdersTotal;
+    }
+  } catch (_) {}
 
-  // tRPC batch responses are arrays: [{ result: { data: ... } }] or [{ data: ... }]
-  const payload = Array.isArray(body) ? body[0] : body;
-  const data = payload?.result?.data ?? payload?.data ?? payload;
+  // 2) Orders & revenue trend from the seller analytics graph API
+  const username = (() => {
+    const m = window.location.pathname.match(/\/users\/([^/]+)/);
+    if (m) return m[1];
+    const link = document.querySelector('a[href*="seller_analytics_dashboard"]');
+    if (link) {
+      try { return new URL(link.href).pathname.match(/\/users\/([^/]+)/)?.[1] ?? null; } catch (_) {}
+    }
+    return null;
+  })();
 
-  // Normalise into a flat array of gig analytics objects
-  const gigs = Array.isArray(data?.gigs) ? data.gigs
-             : Array.isArray(data?.gigAnalytics) ? data.gigAnalytics
-             : Array.isArray(data) ? data
-             : [];
+  if (username) {
+    let timeframes = [];
+    if (from && to) {
+      const days = (new Date(to).getTime() - new Date(from).getTime()) / 86400000;
+      timeframes.push(days > 60 ? '3-months-back' : '30-days-back');
+    } else {
+      timeframes = ['30-days-back', '3-months-back', 'yearly'];
+    }
 
-  let result = gigs.map(g => ({
-    gig_id:        String(g.id ?? g.gig_id ?? ''),
-    gig_title:     g.title ?? g.gig_title ?? '',
-    impressions:   Number(g.impressions ?? 0),
-    clicks:        Number(g.clicks ?? 0),
-    orders:        Number(g.orders ?? 0),
-    cancellations: Number(g.cancellations ?? 0),
-    rating:        g.rating ?? null,
-  }));
-
-  if (gigId) result = result.filter(g => g.gig_id === String(gigId));
-
-  // Client-side date filter (best-effort — Fiverr may not include date fields)
-  if (from) {
-    const fromTs = new Date(from).getTime();
-    result = result.filter(g => !g.date || new Date(g.date).getTime() >= fromTs);
+    for (const type of timeframes) {
+      try {
+        const resp = await fetch(`/users/${username}/seller_analytics_graph_data?type=${encodeURIComponent(type)}`, {
+          credentials: 'include',
+          headers: { 'Accept': 'application/json' },
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          out.graphs[type] = {
+            orders_and_revenue_data: Array.isArray(data.orders_and_revenue_data) ? data.orders_and_revenue_data : [],
+            guides_data:             Array.isArray(data.guides_data) ? data.guides_data : [],
+          };
+        }
+      } catch (_) {}
+    }
   }
-  if (to) {
-    const toTs = new Date(to).getTime();
-    result = result.filter(g => !g.date || new Date(g.date).getTime() <= toTs);
-  }
 
-  // Fallback: if API returned nothing useful, return the raw payload for debugging
-  if (!result.length && gigs.length === 0) {
-    return { _raw: data, note: 'API response did not match expected shape — check _raw for actual data' };
-  }
+  // Note: per-gig impressions/clicks/orders now live on the manage_gigs table —
+  // use list_gigs for that data.
+  out.note = 'Per-gig impressions/clicks/orders come from the manage_gigs page — see list_gigs';
 
-  return result;
+  return out;
 };

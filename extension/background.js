@@ -44,7 +44,8 @@ const TOOL_URLS = {
 };
 
 // Tools that require a tab reload so the interceptor captures a fresh API response
-const RELOAD_TOOLS = new Set(['list_messages', 'get_conversation', 'get_analytics']);
+// (kept for compatibility — current handlers parse the DOM / fetch directly)
+const RELOAD_TOOLS = new Set([]);
 
 let port = null;
 
@@ -65,30 +66,40 @@ function connectNative() {
 
 async function waitForTabLoad(tabId, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error(`Tab ${tabId} did not finish loading within ${timeoutMs}ms`));
-    }, timeoutMs);
-    const listener = (id, info) => {
-      if (id === tabId && info.status === 'complete') {
+    // If the tab is already fully loaded, resolve immediately
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError || !tab) { reject(new Error(`Tab ${tabId} not found`)); return; }
+      if (tab.status === 'complete') { resolve(); return; }
+      const timer = setTimeout(() => {
         chrome.tabs.onUpdated.removeListener(listener);
-        clearTimeout(timer);
-        resolve();
-      }
-    };
-    chrome.tabs.onUpdated.addListener(listener);
+        reject(new Error(`Tab ${tabId} did not finish loading within ${timeoutMs}ms`));
+      }, timeoutMs);
+      const listener = (id, info) => {
+        if (id === tabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          clearTimeout(timer);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+    });
   });
 }
 
 async function ensureFiverrTab(url, forceReload = false) {
   const tabs = await chrome.tabs.query({ url: '*://*.fiverr.com/*' });
   if (tabs.length > 0) {
-    const tabId = tabs[0].id;
-    const currentBase = (tabs[0].url || '').split('?')[0].split('#')[0];
+    // Prefer the user's active tab, then the most recently used tab,
+    // then the first Fiverr tab — avoids driving a stale/background tab.
+    const tab = tabs.find(t => t.active) ??
+                tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0] ??
+                tabs[0];
+    const tabId = tab.id;
+    const currentBase = (tab.url || '').split('?')[0].split('#')[0];
     const targetBase = url.split('?')[0].split('#')[0];
     // Navigate when base paths differ, OR when the target includes a query string
     // that the current URL lacks (e.g. ?current_filter=suspend for activate_gig).
-    const currentQuery = (tabs[0].url || '').split('?')[1] || '';
+    const currentQuery = (tab.url || '').split('?')[1] || '';
     const targetQuery  = url.split('?')[1] || '';
     const needsNav = currentBase !== targetBase || (targetQuery && currentQuery !== targetQuery);
     if (needsNav) {
@@ -147,22 +158,29 @@ async function handleCommand(cmd) {
   // ── get_gig / update_gig: two-step — discover edit URL, then navigate ──────
   if (cmd.tool === 'get_gig' || cmd.tool === 'update_gig') {
     try {
-      // Step 1: land on manage_gigs and extract the gig's edit URL
-      const listTabId = await ensureFiverrTab('https://www.fiverr.com/users/manage_gigs');
-      await new Promise(r => setTimeout(r, 500));
-      const editUrl = await executeJsInTab(listTabId, `
-        const gigId = ${JSON.stringify(String(cmd.params.gigId))};
-        for (let i = 0; i < 20; i++) {
-          const rows = Array.from(document.querySelectorAll('.js-db-table tbody tr[data-id]'));
-          const row = rows.find(r => r.getAttribute('data-id') === gigId);
-          if (row) {
-            const link = row.querySelector('a[href*="/edit"]');
-            if (link) return link.href;
+      // Step 1: land on manage_gigs and extract the gig's edit URL.
+      // Paused gigs may only appear on the suspended-filter view, so retry there.
+      const gigId = String(cmd.params.gigId);
+      const findEditUrl = async (pageUrl) => {
+        const listTabId = await ensureFiverrTab(pageUrl);
+        await new Promise(r => setTimeout(r, 500));
+        return executeJsInTab(listTabId, `
+          const gigId = ${JSON.stringify(gigId)};
+          for (let i = 0; i < 20; i++) {
+            const rows = Array.from(document.querySelectorAll('.js-db-table tbody tr[data-id]'));
+            const row = rows.find(r => r.getAttribute('data-id') === gigId);
+            if (row) {
+              const link = row.querySelector('a[href*="/edit"]');
+              if (link) return link.href;
+            }
+            await new Promise(r => setTimeout(r, 500));
           }
-          await new Promise(r => setTimeout(r, 500));
-        }
-        return null;
-      `);
+          return null;
+        `);
+      };
+
+      let editUrl = await findEditUrl('https://www.fiverr.com/users/manage_gigs');
+      if (!editUrl) editUrl = await findEditUrl('https://www.fiverr.com/users/manage_gigs?current_filter=suspend');
       if (!editUrl) return { id: cmd.id, error: `Gig ${cmd.params.gigId} not found on manage_gigs page` };
 
       // Step 2: navigate to the edit page and send the tool message
@@ -177,6 +195,11 @@ async function handleCommand(cmd) {
 
   // ── All other tools ──────────────────────────────────────────────────────────
   let url = TOOL_URLS[cmd.tool];
+
+  // get_conversation: navigate straight to the thread URL (new inbox SPA route)
+  if (cmd.tool === 'get_conversation' && cmd.params?.conversationId) {
+    url = `https://www.fiverr.com/inbox/${encodeURIComponent(String(cmd.params.conversationId))}`;
+  }
 
   // Resolve null URLs via nav-link discovery
   if (url === null) {
